@@ -8,7 +8,6 @@ import os
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from supabase._async.client import AsyncClient
 from supabase import acreate_client
 
 app = FastAPI()
@@ -20,21 +19,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Supabase
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 db = None
-
-@app.on_event("startup")
-async def startup():
-    global db
-    db = await acreate_client(SUPABASE_URL, SUPABASE_KEY)
 
 peers = {}
 public_rooms = {}
 private_rooms = {}
 
 SECRET_KEY = "changethislater123"
+
+@app.on_event("startup")
+async def startup():
+    global db
+    db = await acreate_client(SUPABASE_URL, SUPABASE_KEY)
 
 class AuthRequest(BaseModel):
     username: str
@@ -61,19 +59,18 @@ def make_invite_code():
 
 @app.post("/register")
 async def register(req: AuthRequest):
-    # Check if username taken
-    existing = db.table("users").select("username").eq("username", req.username).execute()
+    existing = await db.table("users").select("username").eq("username", req.username).execute()
     if existing.data:
         raise HTTPException(status_code=400, detail="Username already taken")
 
     hashed = bcrypt.hashpw(req.password.encode(), bcrypt.gensalt()).decode()
-    db.table("users").insert({"username": req.username, "password": hashed}).execute()
+    await db.table("users").insert({"username": req.username, "password": hashed}).execute()
     print(f"[+] Registered: {req.username}")
     return {"message": "Account created"}
 
 @app.post("/login")
 async def login(req: AuthRequest):
-    result = db.table("users").select("*").eq("username", req.username).execute()
+    result = await db.table("users").select("*").eq("username", req.username).execute()
     if not result.data:
         raise HTTPException(status_code=400, detail="User not found")
 
