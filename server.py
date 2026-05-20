@@ -11,6 +11,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 app = FastAPI()
+@app.get("/")
+async def health():
+    return {"status": "ok"}
 
 app.add_middleware(
     CORSMiddleware,
