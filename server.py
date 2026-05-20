@@ -129,6 +129,113 @@ async def create_private_room(req: PrivateRoomRequest):
 async def list_public_rooms():
     return {"rooms": list(public_rooms.keys())}
 
+class FriendRequest(BaseModel):
+    token: str
+    to_user: str
+
+class FriendResponse(BaseModel):
+    token: str
+    request_id: int
+    accept: bool
+
+@app.post("/friends/request")
+async def send_friend_request(req: FriendRequest):
+    username = verify_token(req.token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    if username == req.to_user:
+        raise HTTPException(status_code=400, detail="Can't add yourself")
+
+    # Check user exists
+    user = await sb_get("users", f"username=eq.{req.to_user}&select=username")
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Check already friends
+    already = await sb_get("friends", f"or=(and(user1.eq.{username},user2.eq.{req.to_user}),and(user1.eq.{req.to_user},user2.eq.{username}))&select=id")
+    if already:
+        raise HTTPException(status_code=400, detail="Already friends")
+
+    # Check already requested
+    existing = await sb_get("friend_requests", f"from_user=eq.{username}&to_user=eq.{req.to_user}&status=eq.pending&select=id")
+    if existing:
+        raise HTTPException(status_code=400, detail="Request already sent")
+
+    headers = sb_headers()
+    headers["Prefer"] = "return=minimal"
+    async with httpx.AsyncClient() as client:
+        await client.post(f"{SUPABASE_URL}/rest/v1/friend_requests",
+            headers=headers,
+            json={"from_user": username, "to_user": req.to_user, "status": "pending"})
+
+    # Notify recipient if online
+    if req.to_user in peers:
+        await peers[req.to_user].send_text(json.dumps({
+            "type": "friend_request",
+            "from": username
+        }))
+
+    return {"message": "Friend request sent"}
+
+@app.post("/friends/respond")
+async def respond_to_request(req: FriendResponse):
+    username = verify_token(req.token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    result = await sb_get("friend_requests", f"id=eq.{req.request_id}&to_user=eq.{username}&select=*")
+    if not result:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    from_user = result[0]["from_user"]
+
+    # Update request status
+    async with httpx.AsyncClient() as client:
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/friend_requests?id=eq.{req.request_id}",
+            headers={**sb_headers(), "Prefer": "return=minimal"},
+            json={"status": "accepted" if req.accept else "declined"}
+        )
+
+    if req.accept:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{SUPABASE_URL}/rest/v1/friends",
+                headers={**sb_headers(), "Prefer": "return=minimal"},
+                json={"user1": from_user, "user2": username}
+            )
+        # Notify sender if online
+        if from_user in peers:
+            await peers[from_user].send_text(json.dumps({
+                "type": "friend_accepted",
+                "from": username
+            }))
+
+    return {"message": "accepted" if req.accept else "declined"}
+
+@app.get("/friends/list")
+async def get_friends(token: str):
+    username = verify_token(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    result = await sb_get("friends", f"or=(user1.eq.{username},user2.eq.{username})&select=*")
+    friends = []
+    for row in result:
+        friend = row["user2"] if row["user1"] == username else row["user1"]
+        friends.append({"username": friend, "online": friend in peers})
+    return {"friends": friends}
+
+@app.get("/friends/requests")
+async def get_requests(token: str):
+    username = verify_token(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    result = await sb_get("friend_requests", f"to_user=eq.{username}&status=eq.pending&select=*")
+    return {"requests": result}
+
+
 # ─── WebSocket ─────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/{token}")
