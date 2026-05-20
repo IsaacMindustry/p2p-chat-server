@@ -5,10 +5,10 @@ import datetime
 import random
 import string
 import os
+import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from supabase import acreate_client
 
 app = FastAPI()
 
@@ -21,7 +21,6 @@ app.add_middleware(
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-db = None
 
 peers = {}
 public_rooms = {}
@@ -29,10 +28,24 @@ private_rooms = {}
 
 SECRET_KEY = "changethislater123"
 
-@app.on_event("startup")
-async def startup():
-    global db
-    db = await acreate_client(SUPABASE_URL, SUPABASE_KEY)
+def sb_headers():
+    return {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json"
+    }
+
+async def sb_get(table, filters=""):
+    url = f"{SUPABASE_URL}/rest/v1/{table}?{filters}"
+    async with httpx.AsyncClient() as client:
+        r = await client.get(url, headers=sb_headers())
+        return r.json()
+
+async def sb_insert(table, data):
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    async with httpx.AsyncClient() as client:
+        r = await client.post(url, headers=sb_headers(), json=data)
+        return r.json()
 
 class AuthRequest(BaseModel):
     username: str
@@ -59,22 +72,22 @@ def make_invite_code():
 
 @app.post("/register")
 async def register(req: AuthRequest):
-    existing = await db.table("users").select("username").eq("username", req.username).execute()
-    if existing.data:
+    existing = await sb_get("users", f"username=eq.{req.username}&select=username")
+    if existing:
         raise HTTPException(status_code=400, detail="Username already taken")
 
     hashed = bcrypt.hashpw(req.password.encode(), bcrypt.gensalt()).decode()
-    await db.table("users").insert({"username": req.username, "password": hashed}).execute()
+    await sb_insert("users", {"username": req.username, "password": hashed})
     print(f"[+] Registered: {req.username}")
     return {"message": "Account created"}
 
 @app.post("/login")
 async def login(req: AuthRequest):
-    result = await db.table("users").select("*").eq("username", req.username).execute()
-    if not result.data:
+    result = await sb_get("users", f"username=eq.{req.username}&select=*")
+    if not result:
         raise HTTPException(status_code=400, detail="User not found")
 
-    user = result.data[0]
+    user = result[0]
     if not bcrypt.checkpw(req.password.encode(), user["password"].encode()):
         raise HTTPException(status_code=400, detail="Wrong password")
 
