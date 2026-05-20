@@ -46,9 +46,11 @@ async def sb_get(table, filters=""):
 
 async def sb_insert(table, data):
     url = f"{SUPABASE_URL}/rest/v1/{table}"
+    headers = sb_headers()
+    headers["Prefer"] = "return=minimal"
     async with httpx.AsyncClient() as client:
-        r = await client.post(url, headers=sb_headers(), json=data)
-        return r.json()
+        r = await client.post(url, headers=headers, json=data)
+        return {}
 
 class AuthRequest(BaseModel):
     username: str
