@@ -8,7 +8,8 @@ import os
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from supabase import create_client
+from supabase._async.client import AsyncClient
+from supabase import acreate_client
 
 app = FastAPI()
 
@@ -22,7 +23,12 @@ app.add_middleware(
 # Supabase
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-db = create_client(SUPABASE_URL, SUPABASE_KEY)
+db = None
+
+@app.on_event("startup")
+async def startup():
+    global db
+    db = await acreate_client(SUPABASE_URL, SUPABASE_KEY)
 
 peers = {}
 public_rooms = {}
