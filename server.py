@@ -4,9 +4,11 @@ import jwt
 import datetime
 import random
 import string
+import os
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from supabase import create_client
 
 app = FastAPI()
 
@@ -17,10 +19,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-users = {}        # {username: hashed_password}
-peers = {}        # {username: websocket}
-public_rooms = {} # {room_name: set of usernames}
-private_rooms = {}# {invite_code: set of usernames}
+# Supabase
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+db = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+peers = {}
+public_rooms = {}
+private_rooms = {}
 
 SECRET_KEY = "changethislater123"
 
@@ -49,22 +55,32 @@ def make_invite_code():
 
 @app.post("/register")
 async def register(req: AuthRequest):
-    if req.username in users:
+    # Check if username taken
+    existing = db.table("users").select("username").eq("username", req.username).execute()
+    if existing.data:
         raise HTTPException(status_code=400, detail="Username already taken")
-    hashed = bcrypt.hashpw(req.password.encode(), bcrypt.gensalt())
-    users[req.username] = hashed
+
+    hashed = bcrypt.hashpw(req.password.encode(), bcrypt.gensalt()).decode()
+    db.table("users").insert({"username": req.username, "password": hashed}).execute()
+    print(f"[+] Registered: {req.username}")
     return {"message": "Account created"}
 
 @app.post("/login")
 async def login(req: AuthRequest):
-    if req.username not in users:
+    result = db.table("users").select("*").eq("username", req.username).execute()
+    if not result.data:
         raise HTTPException(status_code=400, detail="User not found")
-    if not bcrypt.checkpw(req.password.encode(), users[req.username]):
+
+    user = result.data[0]
+    if not bcrypt.checkpw(req.password.encode(), user["password"].encode()):
         raise HTTPException(status_code=400, detail="Wrong password")
+
     token = jwt.encode({
         "username": req.username,
         "exp": datetime.datetime.utcnow() + datetime.timedelta(days=7)
     }, SECRET_KEY, algorithm="HS256")
+
+    print(f"[+] Logged in: {req.username}")
     return {"token": token, "username": req.username}
 
 # ─── Rooms ─────────────────────────────────────────────────────────────────
@@ -113,13 +129,11 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             data = json.loads(raw)
             msg_type = data.get("type")
 
-            # Direct message
             if msg_type == "message":
                 target = data.get("to")
                 if target and target in peers:
                     await peers[target].send_text(raw)
 
-            # Join public room
             elif msg_type == "join_public":
                 room = data.get("room")
                 if room in public_rooms:
@@ -129,7 +143,6 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                         "text": f"Joined room '{room}'"
                     }))
 
-            # Join private room
             elif msg_type == "join_private":
                 code = data.get("code")
                 if code in private_rooms:
@@ -144,7 +157,6 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                         "text": "Invalid invite code"
                     }))
 
-            # Room message
             elif msg_type == "room_message":
                 room = data.get("room")
                 is_private = data.get("is_private", False)
