@@ -9,6 +9,9 @@ import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import gzip
+import base64
+
 
 app = FastAPI()
 @app.get("/")
@@ -51,6 +54,23 @@ async def sb_insert(table, data):
     async with httpx.AsyncClient() as client:
         r = await client.post(url, headers=headers, json=data)
         return {}
+    
+def compress_message(text: str) -> str:
+    compressed = gzip.compress(text.encode())
+    return base64.b64encode(compressed).decode()
+
+def decompress_message(stored: str) -> str:
+    decoded = base64.b64decode(stored)
+    return gzip.decompress(decoded).decode()
+
+async def save_message(from_user: str, to_user: str, text: str):
+    compressed = compress_message(text)
+    await sb_insert("messages", {
+        "from_user": from_user,
+        "to_user": to_user,
+        "content": compressed,
+        "compressed": True
+    })
 
 class AuthRequest(BaseModel):
     username: str
@@ -235,6 +255,29 @@ async def get_requests(token: str):
     result = await sb_get("friend_requests", f"to_user=eq.{username}&status=eq.pending&select=*")
     return {"requests": result}
 
+@app.get("/messages/history")
+async def get_history(token: str, other_user: str):
+    username = verify_token(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Get messages between these two users in both directions
+    result = await sb_get("messages",
+        f"or=(and(from_user.eq.{username},to_user.eq.{other_user}),and(from_user.eq.{other_user},to_user.eq.{username}))&order=created_at.asc&select=*"
+    )
+
+    # Decompress each message before sending back
+    messages = []
+    for row in result:
+        messages.append({
+            "from": row["from_user"],
+            "to": row["to_user"],
+            "text": decompress_message(row["content"]) if row["compressed"] else row["content"],
+            "time": row["created_at"]
+        })
+
+    return {"messages": messages}
+
 
 # ─── WebSocket ─────────────────────────────────────────────────────────────
 
@@ -259,8 +302,11 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
 
             if msg_type == "message":
                 target = data.get("to")
-                if target and target in peers:
-                    await peers[target].send_text(raw)
+                text = data.get("text", "")
+                if target and text:
+                    await save_message(username, target, text)
+                    if target in peers:
+                        await peers[target].send_text(raw)
 
             elif msg_type == "join_public":
                 room = data.get("room")
