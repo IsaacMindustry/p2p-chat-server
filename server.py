@@ -11,7 +11,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import gzip
 import base64
+from better_profanity import profanity
 
+profanity.load_censor_words()
 
 app = FastAPI()
 @app.get("/")
@@ -279,7 +281,7 @@ async def get_history(token: str, other_user: str):
     return {"messages": messages}
 
 
-# ─── WebSocket ─────────────────────────────────────────────────────────────
+# ─── WebSocket ────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/{token}")
 async def websocket_endpoint(websocket: WebSocket, token: str):
@@ -303,12 +305,16 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             if msg_type == "message":
                 target = data.get("to")
                 text = data.get("text", "")
-                print(f"[MSG] from={username} to={target} text={text}")
-                if target and text:
-                    await save_message(username, target, text)
+                clean_text = profanity.censor(text)
+                print(f"[MSG] from={username} to={target} text={clean_text}")
+                if target and clean_text:
+                    # Rebuild the message with clean text
+                    clean_data = {**data, "text": clean_text}
+                    clean_raw = json.dumps(clean_data)
+                    await save_message(username, target, clean_text)
                     print(f"[SAVED] message from {username} to {target}")
                     if target in peers:
-                        await peers[target].send_text(raw)
+                        await peers[target].send_text(clean_raw)
 
             elif msg_type == "join_public":
                 room = data.get("room")
