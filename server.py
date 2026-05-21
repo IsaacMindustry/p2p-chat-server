@@ -303,8 +303,10 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             if msg_type == "message":
                 target = data.get("to")
                 text = data.get("text", "")
+                print(f"[MSG] from={username} to={target} text={text}")
                 if target and text:
                     await save_message(username, target, text)
+                    print(f"[SAVED] message from {username} to {target}")
                     if target in peers:
                         await peers[target].send_text(raw)
 
